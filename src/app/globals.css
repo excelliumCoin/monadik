@@ -1,0 +1,120 @@
+/* -------- Purple + White Topbar -------- */
+:root{
+  --purple-900:#4c1d95;
+  --purple-800:#5b21b6;
+  --purple-700:#6d28d9;
+  --purple-600:#7c3aed;
+  --white:#ffffff;
+}
+
+.topbar{
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  width: 100%;
+  color: var(--white);
+  background:
+    linear-gradient(90deg, var(--purple-900), var(--purple-700));
+  border-bottom: 1px solid rgba(255,255,255,.25);
+  box-shadow: 0 6px 24px rgba(76,29,149,.25);
+  backdrop-filter: blur(6px);
+}
+.topbar__wrap{
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.topbar__brand{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--white);
+  text-decoration: none;
+  font-weight: 900;
+  font-size: 20px;
+  letter-spacing: .3px;
+  text-shadow: 0 1px 0 rgba(0,0,0,.25);
+}
+.topbar__logo{
+  filter: drop-shadow(0 2px 4px rgba(255,255,255,.35));
+}
+
+.topbar__nav a{
+  color: #f5f3ff;
+  text-decoration: none;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 10px;
+  margin-left: 6px;
+  transition: background .15s ease, transform .06s ease;
+}
+.topbar__nav a:hover{
+  background: rgba(255,255,255,.15);
+}
+.topbar__nav a:active{
+  transform: translateY(1px);
+}
+.topbar__nav a:focus-visible{
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.page{
+  /* üst barın altında minik nefes alanı */
+  padding-top: 8px;
+}
+/* ==== Global buttons (works for <button> and <Link>/<a>) ==== */
+.btn,
+a.btn,
+a.btn:link,
+a.btn:visited {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: #2d2f39;
+  color: #f3f6ff;
+  font-weight: 800;
+  text-decoration: none !important; /* link alt çizgisi kapalı */
+  cursor: pointer;
+  transition: transform .08s ease, filter .12s ease, box-shadow .12s ease;
+}
+.btn[disabled]{ opacity:.55; cursor:not-allowed; }
+
+.btn.primary{
+  background: linear-gradient(90deg,#5b21b6,#7c3aed);
+  border-color: rgba(124,58,237,.6);
+  box-shadow: 0 6px 24px rgba(124,58,237,.35);
+}
+
+.btn.success{ background:#065f46; border-color:#34d399; }
+
+.btn.leader,
+a.btn.leader{
+  background: linear-gradient(90deg,#5b21b6,#7c3aed,#a78bfa);
+  color:#fff;
+  border-color: rgba(124,58,237,.55);
+  box-shadow: 0 8px 24px rgba(124,58,237,.35);
+}
+.btn.leader:hover,
+a.btn.leader:hover{ filter:brightness(1.07); transform: translateY(-1px); }
+.btn.leader:active,
+a.btn.leader:active{ transform: translateY(0); }
+
+.btn .ico{ margin-right:6px; }
+
+
+/* İstersen genel arka planı da mor-beyaz geçişli yapabilirsin: */
+/*
+body{
+  background:
+    linear-gradient(180deg, #ffffff 0%, #faf5ff 40%, #ffffff 100%);
+}
+*/
