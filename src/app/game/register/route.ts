@@ -1,64 +1,85 @@
+// src/app/game/register/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { publicClient, walletClient } from '@/lib/viem';
-import type { Address, Abi } from 'viem';
+import { parseAbi, type Address, type Hash } from 'viem';
 
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS as Address;
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-const ABI = [
-  {
-    type: 'function',
-    name: 'registerGame',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: '_game', type: 'address' },
-      { name: '_name', type: 'string'  },
-      { name: '_image', type: 'string' },
-      { name: '_url', type: 'string'   },
-    ],
-    outputs: [],
-  },
-  {
-    type: 'function',
-    name: 'games',
-    stateMutability: 'view',
-    inputs: [{ name: '', type: 'address' }],
-    outputs: [
-      { name: 'game',  type: 'address' },
-      { name: 'image', type: 'string'  },
-      { name: 'name',  type: 'string'  },
-      { name: 'url',   type: 'string'  },
-    ],
-  },
-] as const satisfies Abi;
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS as Address | undefined;
 
-export async function POST(req: NextRequest) {
+const ABI = parseAbi([
+  'function registerGame(address _game, string _name, string _image, string _url)',
+  'function games(address) view returns (address game,string image,string name,string url)',
+]);
+
+type RegisterBody = {
+  name?: string;
+  image?: string;
+  url?: string;
+};
+
+function isAddress(v: unknown): v is Address {
+  return typeof v === 'string' && /^0x[a-fA-F0-9]{40}$/.test(v);
+}
+
+export async function GET() {
   try {
-    if (!CONTRACT_ADDRESS) return NextResponse.json({ ok: false, error: 'CONTRACT_ADDRESS missing' }, { status: 500 });
-    const body = await req.json();
-    const name  = String(body.name ?? '').trim();
-    const image = String(body.image ?? '').trim();
-    const url   = String(body.url ?? '').trim();
-    if (!name)  return NextResponse.json({ ok: false, error: 'name required' }, { status: 400 });
+    if (!isAddress(CONTRACT_ADDRESS)) {
+      return NextResponse.json({ ok: false, error: 'CONTRACT_ADDRESS missing' }, { status: 500 });
+    }
+    const game = walletClient?.account?.address as Address | undefined;
+    if (!isAddress(game)) {
+      return NextResponse.json({ ok: false, error: 'server signer missing' }, { status: 500 });
+    }
 
-    const gameAddr = walletClient.account!.address as Address;
-
-    const tx = await walletClient.writeContract({
-      address: CONTRACT_ADDRESS,
-      abi: ABI,
-      functionName: 'registerGame',
-      args: [gameAddr, name, image, url],
-    });
-
-    // doğrulama için ardından oku (opsiyonel)
-    const meta = await publicClient.readContract({
+    const info = (await publicClient.readContract({
       address: CONTRACT_ADDRESS,
       abi: ABI,
       functionName: 'games',
-      args: [gameAddr],
+      args: [game],
+    })) as readonly [Address, string, string, string];
+
+    const [addr, image, name, url] = info;
+    const registered = addr && addr.toLowerCase() === game.toLowerCase();
+
+    return NextResponse.json({
+      ok: true,
+      registered,
+      game,
+      meta: { name, image, url },
+    });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : 'unknown_error';
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    if (!isAddress(CONTRACT_ADDRESS)) {
+      return NextResponse.json({ ok: false, error: 'CONTRACT_ADDRESS missing' }, { status: 500 });
+    }
+    const game = walletClient?.account?.address as Address | undefined;
+    if (!isAddress(game)) {
+      return NextResponse.json({ ok: false, error: 'server signer missing' }, { status: 500 });
+    }
+
+    const body: RegisterBody = await req.json().catch(() => ({} as RegisterBody));
+    const name = (body.name ?? process.env.GAME_NAME ?? 'Monad Racer').toString();
+    const image = (body.image ?? process.env.GAME_IMAGE ?? '').toString();
+    const url = (body.url ?? process.env.GAME_URL ?? '').toString();
+
+    const tx: Hash = await walletClient.writeContract({
+      address: CONTRACT_ADDRESS,
+      abi: ABI,
+      functionName: 'registerGame',
+      args: [game, name, image, url],
     });
 
-    return NextResponse.json({ ok: true, tx, meta });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e?.shortMessage ?? e?.message ?? e) }, { status: 500 });
+    return NextResponse.json({ ok: true, tx, game, name, image, url });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : 'unknown_error';
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

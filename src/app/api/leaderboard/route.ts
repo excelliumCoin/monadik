@@ -1,78 +1,104 @@
-export const runtime = 'nodejs';        
-export const dynamic = 'force-dynamic'; 
+// src/app/api/leaderboard/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { publicClient, walletClient } from '@/lib/viem';
 import { parseAbiItem, type Address } from 'viem';
 
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS as Address;
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS as Address | undefined;
 
 // Tekil event (viem: getLogs -> "event" ve opsiyonel "args" kullanılır)
 const PlayerDataUpdated = parseAbiItem(
   'event PlayerDataUpdated(address indexed game, address indexed player, uint256 indexed scoreAmount, uint256 transactionAmount)'
 );
 
+type Scope = 'game' | 'global';
+
+type Acc = { player: Address; score: bigint; transactions: bigint };
+type RowOut = {
+  player: Address;
+  username: string | null;
+  score: string;
+  transactions: string;
+};
+
+type EventArgs = {
+  game: Address;
+  player: Address;
+  scoreAmount: bigint;
+  transactionAmount: bigint;
+};
+
+function isAddress(v: unknown): v is Address {
+  return typeof v === 'string' && /^0x[a-fA-F0-9]{40}$/.test(v);
+}
+
 export async function GET(req: NextRequest) {
   try {
-    if (!CONTRACT_ADDRESS) {
+    if (!isAddress(CONTRACT_ADDRESS)) {
       return NextResponse.json({ ok: false, error: 'CONTRACT_ADDRESS missing' }, { status: 500 });
     }
 
-    const url        = new URL(req.url);
-    const scope      = (url.searchParams.get('scope') ?? 'game') as 'game' | 'global';
-    const limit      = clampInt(url.searchParams.get('limit'), 20, 1, 100);
-    const rangeInput = clampInt(url.searchParams.get('range'), 10000, 100, 50000);
-    const chunkSize  = clampInt(url.searchParams.get('chunk'), 90, 10, 100);
-    const maxChunks  = clampInt(url.searchParams.get('maxChunks'), 200, 1, 2000);
-    const withNames  = (url.searchParams.get('withNames') ?? '1').toLowerCase() !== '0';
+    const url = new URL(req.url);
+    const scope = ((url.searchParams.get('scope') ?? 'game') === 'global' ? 'global' : 'game') as Scope;
 
-    // "game" kapsamı için filtrelenecek adres:
-    const gameFromQuery = url.searchParams.get('game') as Address | null;
-    const serverSigner  = walletClient?.account?.address as Address | undefined;
-    const gameAddress   = scope === 'game' ? (gameFromQuery ?? serverSigner ?? null) : null;
-    if (scope === 'game' && !gameAddress) {
-      return NextResponse.json({ ok: false, error: 'GAME scope requires server signer or ?game=' }, { status: 400 });
+    const limit = clampInt(url.searchParams.get('limit'), 20, 1, 100);
+    const rangeInput = clampInt(url.searchParams.get('range'), 10_000, 100, 50_000);
+    const chunkSize = clampInt(url.searchParams.get('chunk'), 90, 10, 100);
+    const maxChunks = clampInt(url.searchParams.get('maxChunks'), 200, 1, 2_000);
+    const withNames = (url.searchParams.get('withNames') ?? '1').toLowerCase() !== '0';
+
+    // "game" kapsamı için filtrelenecek adres
+    const qGame = url.searchParams.get('game');
+    const gameFromQuery = isAddress(qGame) ? (qGame as Address) : undefined;
+    const serverSigner = walletClient?.account?.address as Address | undefined;
+    const gameAddress = scope === 'game' ? (gameFromQuery ?? serverSigner) : undefined;
+
+    if (scope === 'game' && !isAddress(gameAddress)) {
+      return NextResponse.json(
+        { ok: false, error: 'GAME scope requires server signer or ?game=' },
+        { status: 400 }
+      );
     }
 
     const toBlock = await publicClient.getBlockNumber(); // bigint
     const totalRequested = BigInt(rangeInput);
-    const zero = BigInt(0);
+    const zero = 0n;
 
-    let fromBlock = toBlock > (totalRequested - BigInt(1))
-      ? toBlock - (totalRequested - BigInt(1))
-      : zero;
+    let fromBlock =
+      toBlock > (totalRequested - 1n) ? toBlock - (totalRequested - 1n) : zero;
 
-    const neededChunks = chunksNeeded(fromBlock, toBlock, BigInt(chunkSize));
-    if (neededChunks > maxChunks) {
-      const span = BigInt(chunkSize) * BigInt(maxChunks) - BigInt(1);
+    const needed = chunksNeeded(fromBlock, toBlock, BigInt(chunkSize));
+    if (needed > maxChunks) {
+      const span = BigInt(chunkSize) * BigInt(maxChunks) - 1n;
       fromBlock = toBlock > span ? toBlock - span : zero;
     }
 
-    // Logları RPC limitine takılmadan, gerekirse "game" arg filtresiyle çek
+    // Logları parça parça çek (scope=game ise event arg filtresi uygula)
     const logs = await getLogsChunked({
       address: CONTRACT_ADDRESS,
       fromBlock,
       toBlock,
       chunkSize: BigInt(chunkSize),
-      args: scope === 'game' ? { game: gameAddress! } : undefined,
+      args: scope === 'game' ? { game: gameAddress as Address } : undefined,
     });
 
-    type Acc = { player: Address; score: bigint; transactions: bigint };
     const map = new Map<string, Acc>();
 
     for (const log of logs) {
-      const { args } = log as unknown as {
-        args: {
-          game: Address;
-          player: Address;
-          scoreAmount: bigint;
-          transactionAmount: bigint;
-        };
-      };
-      const key = (args.player as string).toLowerCase();
-      const prev = map.get(key) ?? { player: args.player, score: BigInt(0), transactions: BigInt(0) };
-      prev.score        = prev.score        + (args.scoreAmount ?? BigInt(0));
-      prev.transactions = prev.transactions + (args.transactionAmount ?? BigInt(0));
-      map.set(key, prev);
+      const { game, player, scoreAmount, transactionAmount } = log.args;
+      // Eğer scope=game ise temkinli olun (theoretical double-check)
+      if (scope === 'game' && gameAddress && game.toLowerCase() !== gameAddress.toLowerCase()) {
+        continue;
+      }
+      const key = (player as string).toLowerCase();
+      const prev = map.get(key) ?? { player, score: 0n, transactions: 0n };
+      map.set(key, {
+        player,
+        score: prev.score + (scoreAmount ?? 0n),
+        transactions: prev.transactions + (transactionAmount ?? 0n),
+      });
     }
 
     const top = Array.from(map.values())
@@ -86,11 +112,11 @@ export async function GET(req: NextRequest) {
     // İlk N için username çöz (adres→kullanıcı adı)
     let nameMap: Map<string, string | null> = new Map();
     if (withNames && top.length > 0) {
-      const uniq = Array.from(new Set(top.map(r => (r.player as string).toLowerCase())));
+      const uniq = Array.from(new Set(top.map((r) => (r.player as string).toLowerCase())));
       nameMap = await resolveUsernames(uniq, 6);
     }
 
-    const rows = top.map((r) => ({
+    const rows: RowOut[] = top.map((r) => ({
       player: r.player,
       username: nameMap.get((r.player as string).toLowerCase()) ?? null,
       score: r.score.toString(),
@@ -107,8 +133,9 @@ export async function GET(req: NextRequest) {
       rowsCount: rows.length,
       rows,
     });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : 'unknown_error';
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
 
@@ -119,9 +146,9 @@ async function getLogsChunked(opts: {
   toBlock: bigint;
   chunkSize: bigint;
   args?: { game?: Address; player?: Address }; // sadece ihtiyacımız olan arg
-}) {
+}): Promise<Array<{ args: EventArgs }>> {
   const { address, fromBlock, toBlock, chunkSize, args } = opts;
-  const out: any[] = [];
+  const out: Array<{ args: EventArgs }> = [];
   let start = fromBlock;
 
   while (start <= toBlock) {
@@ -131,10 +158,11 @@ async function getLogsChunked(opts: {
       event: PlayerDataUpdated,
       fromBlock: start,
       toBlock: end,
-      ...(args ? { args } : {}), // scope=game ise topic filtresi uygula
+      ...(args ? { args } : {}),
     });
-    out.push(...logs);
-    start = end + BigInt(1);
+    // logs, viem sayesinde { args } içerir; EventArgs ile uyumludur
+    for (const l of logs as Array<{ args: EventArgs }>) out.push(l);
+    start = end + 1n;
   }
   return out;
 }
@@ -168,21 +196,47 @@ async function fetchUsername(wallet: string): Promise<string | null> {
     const u = `https://monad-games-id-site.vercel.app/api/check-wallet?wallet=${wallet}&t=${Date.now()}`;
     const r = await fetch(u, { cache: 'no-store' });
     if (!r.ok) return null;
-    const data: any = await r.json().catch(() => ({}));
-    const username =
-      data?.username ??
-      data?.handle ??
-      (typeof data?.user?.username === 'string' ? data.user.username : undefined);
+    const data: unknown = await r.json().catch(() => ({}));
 
-    const hasUsername =
-      Boolean(data?.hasUsername) ||
-      Boolean(data?.exists) ||
-      Boolean(username && String(username).trim().length > 0);
-
-    return hasUsername ? String(username) : null;
+    const username = pickUsername(data);
+    const has = pickHasUsername(data) || Boolean(username);
+    return has && username ? username : null;
   } catch {
     return null;
   }
+}
+
+/** Upstream dönen objeden username/handle’ı güvenli biçimde seç */
+function pickUsername(obj: unknown): string | undefined {
+  if (typeof obj !== 'object' || obj === null) return undefined;
+  const o = obj as Record<string, unknown>;
+
+  const direct =
+    typeof o.username === 'string' ? o.username :
+    typeof o.handle === 'string'   ? o.handle   :
+    undefined;
+  if (direct && direct.trim()) return direct.trim();
+
+  const user = o.user;
+  if (typeof user === 'object' && user !== null) {
+    const u = user as Record<string, unknown>;
+    const nested =
+      typeof u.username === 'string' ? u.username :
+      typeof u.handle === 'string'   ? u.handle   :
+      undefined;
+    if (nested && nested.trim()) return nested.trim();
+  }
+  return undefined;
+}
+
+/** Upstream’in “hasUsername/exists” bayraklarını güvenli okur */
+function pickHasUsername(obj: unknown): boolean {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const o = obj as Record<string, unknown>;
+  const hv =
+    (typeof o.hasUsername === 'boolean' && o.hasUsername) ||
+    (typeof o.exists === 'boolean' && o.exists);
+  return Boolean(hv);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -194,6 +248,6 @@ function clampInt(v: string | null, def: number, min: number, max: number) {
 }
 
 function chunksNeeded(fromBlock: bigint, toBlock: bigint, chunkSize: bigint) {
-  const total = toBlock >= fromBlock ? (toBlock - fromBlock + BigInt(1)) : BigInt(0);
-  return Number((total + chunkSize - BigInt(1)) / chunkSize);
+  const total = toBlock >= fromBlock ? toBlock - fromBlock + 1n : 0n;
+  return Number((total + chunkSize - 1n) / chunkSize);
 }

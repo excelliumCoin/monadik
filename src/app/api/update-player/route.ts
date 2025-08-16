@@ -1,68 +1,55 @@
-export const runtime = 'nodejs';        
-export const dynamic = 'force-dynamic'; 
 import { NextRequest, NextResponse } from 'next/server';
-import { publicClient, walletClient } from '@/lib/viem';
-import type { Address, Abi } from 'viem';
+import { walletClient } from '@/lib/viem';
+import { parseAbi, type Address, type Hash } from 'viem';
 
-const CONTRACT_ADDRESS = (process.env.CONTRACT_ADDRESS ??
-  '0xceCBFF203C8B6044F52CE23D914A1bfD997541A4') as Address;
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-const ABI = [
-  {
-    type: 'function',
-    name: 'updatePlayerData',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'player', type: 'address' },
-      { name: 'scoreAmount', type: 'uint256' },
-      { name: 'transactionAmount', type: 'uint256' },
-    ],
-    outputs: [],
-  },
-  { type: 'function', name: 'GAME_ROLE', stateMutability: 'view', inputs: [], outputs: [{ type: 'bytes32' }] },
-  { type: 'function', name: 'hasRole', stateMutability: 'view', inputs: [{ type: 'bytes32' }, { type: 'address' }], outputs: [{ type: 'bool' }] },
-] as const satisfies Abi;
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS as Address | undefined;
+
+const ABI = parseAbi([
+  'function updatePlayerData(address player, uint256 scoreAmount, uint256 transactionAmount)',
+]);
+
+function isAddress(v: unknown): v is Address {
+  return typeof v === 'string' && /^0x[a-fA-F0-9]{40}$/.test(v);
+}
+
+type Body = {
+  player?: string;
+  scoreAmount?: number;
+  transactionAmount?: number;
+};
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const player = String(body.player ?? '') as `0x${string}`;
-    const scoreAmount = BigInt(body.scoreAmount ?? 0);
-    const transactionAmount = BigInt(body.transactionAmount ?? 0);
-
-    if (!/^0x[a-fA-F0-9]{40}$/.test(player)) {
-      return NextResponse.json({ ok: false, error: 'bad player address' }, { status: 400 });
-    }
-    if (!CONTRACT_ADDRESS) {
+    if (!isAddress(CONTRACT_ADDRESS)) {
       return NextResponse.json({ ok: false, error: 'CONTRACT_ADDRESS missing' }, { status: 500 });
     }
-
-    // server signer GAME_ROLE kontrolü
-    const gameRole = await publicClient.readContract({
-      address: CONTRACT_ADDRESS,
-      abi: ABI,
-      functionName: 'GAME_ROLE',
-    });
-    const sender = walletClient.account!.address;
-    const has = await publicClient.readContract({
-      address: CONTRACT_ADDRESS,
-      abi: ABI,
-      functionName: 'hasRole',
-      args: [gameRole, sender],
-    });
-    if (!has) {
-      return NextResponse.json({ ok: false, error: `Server signer has no GAME_ROLE (${sender})` }, { status: 403 });
+    const game = walletClient?.account?.address as Address | undefined;
+    if (!isAddress(game)) {
+      return NextResponse.json({ ok: false, error: 'server signer missing' }, { status: 500 });
     }
 
-    const tx = await walletClient.writeContract({
+    const body: Body = await req.json().catch(() => ({} as Body));
+    const player = (body.player || '').toLowerCase() as Address;
+    const scoreAmount = Number(body.scoreAmount ?? 0);
+    const transactionAmount = Number(body.transactionAmount ?? 0);
+
+    if (!isAddress(player)) {
+      return NextResponse.json({ ok: false, error: 'bad player' }, { status: 400 });
+    }
+
+    const tx: Hash = await walletClient.writeContract({
       address: CONTRACT_ADDRESS,
       abi: ABI,
       functionName: 'updatePlayerData',
-      args: [player, scoreAmount, transactionAmount],
+      args: [player, BigInt(Math.max(0, Math.trunc(scoreAmount))), BigInt(Math.max(0, Math.trunc(transactionAmount)))],
     });
 
     return NextResponse.json({ ok: true, tx });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e?.shortMessage ?? e?.message ?? e) }, { status: 500 });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : 'unknown_error';
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

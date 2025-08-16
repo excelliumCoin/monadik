@@ -1,39 +1,34 @@
-import { NextRequest, NextResponse } from 'next/server';
+// src/app/game/status/route.ts
+import { NextResponse } from 'next/server';
 import { publicClient, walletClient } from '@/lib/viem';
-import type { Address, Abi } from 'viem';
+import type { Address } from 'viem';
 
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS as Address;
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-const ABI = [
-  {
-    type: 'function',
-    name: 'games',
-    stateMutability: 'view',
-    inputs: [{ name: '', type: 'address' }],
-    outputs: [
-      { name: 'game',  type: 'address' },
-      { name: 'image', type: 'string'  },
-      { name: 'name',  type: 'string'  },
-      { name: 'url',   type: 'string'  },
-    ],
-  },
-] as const satisfies Abi;
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS as Address | undefined;
 
-export async function GET(_: NextRequest) {
+function isAddress(v: unknown): v is Address {
+  return typeof v === 'string' && /^0x[a-fA-F0-9]{40}$/.test(v);
+}
+
+export async function GET() {
   try {
-    if (!CONTRACT_ADDRESS) return NextResponse.json({ ok: false, error: 'CONTRACT_ADDRESS missing' }, { status: 500 });
+    const signer = walletClient?.account?.address as Address | undefined;
+    const okSigner = isAddress(signer);
+    const okContract = isAddress(CONTRACT_ADDRESS);
 
-    const gameAddr = walletClient.account!.address as Address; // server signer = bu oyunun “game” adresi
-    const res = await publicClient.readContract({
-      address: CONTRACT_ADDRESS,
-      abi: ABI,
-      functionName: 'games',
-      args: [gameAddr],
-    }) as unknown as { game: Address; image: string; name: string; url: string };
+    const head = await publicClient.getBlockNumber();
 
-    const registered = !!res?.game && res.game.toLowerCase() === gameAddr.toLowerCase() && !!res.name;
-    return NextResponse.json({ ok: true, registered, gameAddress: gameAddr, meta: res });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });
+    return NextResponse.json({
+      ok: true,
+      signer: okSigner ? signer : null,
+      contract: okContract ? CONTRACT_ADDRESS : null,
+      latestBlock: head.toString(),
+      ready: okSigner && okContract,
+    });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : 'unknown_error';
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
